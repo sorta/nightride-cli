@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -188,7 +189,7 @@ func (m *model) updateSelectorColors(iconKey string) {
 func min(a, b int) int { if a < b { return a }; return b }
 func max(a, b int) int { if a > b { return a }; return b }
 
-func newModel() model {
+func newModel(playingIndex int) model {
 	items := make([]list.Item, len(stations))
 	for i := range stations {
 		items[i] = stations[i]
@@ -206,6 +207,7 @@ func newModel() model {
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(false)
 	l.SetShowHelp(false)
+	l.Select(playingIndex)
 
 	originalTitles := make(map[int]string)
 	for i := range stations {
@@ -214,7 +216,7 @@ func newModel() model {
 
 	m := model{
 		l:                  l,
-		playingIdx:         0,
+		playingIdx:         playingIndex,
 		startTime:          time.Now(),
 		barHeights:         make([]int, asciiArtWidth()),
 		ampChan:            make(chan []float64, 1),
@@ -225,8 +227,8 @@ func newModel() model {
 		scrollStep:         1,
 	}
 
-	if len(stations) > 0 {
-		st := stations[0]
+	if len(stations) > playingIndex {
+		st := stations[playingIndex]
 		iconKey := strings.ToLower(stationKey(st.url))
 		iconKey = strings.TrimSuffix(iconKey, ".mp3")
 		if iconKey == "nightride" {
@@ -240,7 +242,7 @@ func newModel() model {
 
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		startStreamCmd(0, m.ampChan),
+		startStreamCmd(m.playingIdx, m.ampChan),
 		startSSECmd(),
 		waitMetaCmd(),
 		visualizerTick(),
@@ -1003,10 +1005,10 @@ type rootModel struct {
 	termH int
 }
 
-func newRootModel() rootModel {
+func newRootModel(playingIndex int) rootModel {
 	return rootModel{
 		active:      0,
-		player:      newModel(),
+		player:      newModel(playingIndex),
 		irc:         NewZuseModel(),
 		doomRunning: false,
 	}
@@ -1407,29 +1409,60 @@ func extractJSONBlock(html, name string) string {
 	return ""
 }
 
+func findStationIndex(query *string) int {
+	pattern := fmt.Sprintf(`(?i)%s`, *query)
+	re := regexp.MustCompile(pattern)
+
+	for i := range stations {
+		match := re.MatchString(stations[i].name)
+		if match {
+			return i
+		}
+	}
+
+	return -1
+}
+
+func getStartingStationIndex(query string) int {
+	if query != "" {
+		stationIndex := findStationIndex(&query)
+		if stationIndex >= 0 {
+			return stationIndex
+		} else {
+			fmt.Fprintln(os.Stderr, "Station not found, using default")
+		}
+	}
+	return 0
+}
+
 /* ───────────── main ───────────── */
 
 var app *tea.Program
-
-func hasArg(x string) bool {
-	for _, a := range os.Args[1:] {
-		if a == x {
-			return true
-		}
-	}
-	return false
-}
+var requestedStation string
 
 func main() {
 	os.Args[0] = "Nightride Client"
 
-	if hasArg("--doom") {
+	isRunDoom := flag.Bool("doom", false, "Run Doom")
+
+	const (
+		defaultStation = "Nightride FM"
+		usage          = "The station to listen to"
+	)
+	flag.StringVar(&requestedStation, "station", defaultStation, usage)
+	flag.StringVar(&requestedStation, "s", defaultStation, usage+" (shorthand)")
+
+	flag.Parse()
+
+	if *isRunDoom {
 		if err := RunDoom(nil); err != nil {
 			fmt.Fprintln(os.Stderr, "doom:", err)
 			os.Exit(1)
 		}
 		return
 	}
+
+	startingStationIndex := getStartingStationIndex(requestedStation)
 
 	setTitleNightride()
 
@@ -1440,7 +1473,7 @@ func main() {
 	restoreStderr := redirectStderrToMonitor()
 	defer restoreStderr()
 
-	app = tea.NewProgram(newRootModel(), tea.WithAltScreen())
+	app = tea.NewProgram(newRootModel(startingStationIndex), tea.WithAltScreen())
 	if err := app.Start(); err != nil && err != io.EOF {
 		logf("fatal: %v", err)
 		os.Exit(1)
