@@ -13,7 +13,7 @@ Built for the command line frontier.
 - All radio stations directly accessible from the terminal
 - Select the starting station with `--station` / `-s`
 - In-app volume and mute controls
-- Support for Discord Rich Presence
+- Discord Rich Presence showing the current channel, artist, and song
 
 - Press Y to watch the youtube livestreams in ASCII, colored and monochromatic
 ![Demo](assets/ascii.jpg)
@@ -33,6 +33,10 @@ Built for the command line frontier.
 ![DOOM](assets/doom.png)
 The project includes a .wad freeware version of DOOM. Wad files are the things people use to run DOOM on toasters. WAD, according to the Doom Bible, is an acrostic for "Where's All the Data?". Read more on https://doom.fandom.com/wiki/WAD. Shout out to the [GORE engine](https://github.com/AndreRenaud/gore), which I fixed for Windows compatibility. If someone asks if it runs doom, you just answer "hell yeah". `Controls: Enter opens the game, arrows move, comma to shoot, space opens doors. Pressing D again quits doom.`
 
+
+### Discord presence name
+
+The top-level Discord activity name comes from the registered Discord application, not the status text sent by this client. To remove “(via terminal)” from that name, the application owner must rename application `1396017162425991279` in the [Discord Developer Portal](https://discord.com/developers/applications).
 
 ## Quick Installation
 
