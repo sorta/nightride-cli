@@ -401,33 +401,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.originalTitles[i] = meta.title
 
 				if i == m.playingIdx {
-					iconKey := strings.ToLower(stationKey(st.url))
-					iconKey = strings.TrimSuffix(iconKey, ".mp3")
-					if iconKey == "nightride" {
-						iconKey = "nrfm"
-					}
-
-					parts := strings.SplitN(st.title, " - ", 2)
-					artist := ""
-					track := st.title
-					if len(parts) == 2 {
-						artist = parts[0]
-						track = parts[1]
-					}
-
-					err := client.SetActivity(client.Activity{
-						Type:       2,
-						Details:    "Listening to " + st.name,
-						State:      artist,
-						LargeImage: iconKey,
-						SmallImage: "nrfm",
-						LargeText:  track,
-						Timestamps: &client.Timestamps{Start: &m.startTime},
-						Buttons: []*client.Button{
-							{Label: "Listen to " + st.name, Url: "https://nightride.fm/?station=" + st.id()},
-							{Label: "Join the Discord", Url: "https://discord.gg/synthwave"},
-						},
-					})
+					err := client.SetActivity(discordActivity(st, m.startTime))
 					if err != nil {
 						logf("discord rpc: %v", err)
 					}
@@ -608,6 +582,28 @@ func (m model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, visualWithMargin, header, m.l.View())
 }
 
+// discordActivity is shared by playback startup and live metadata updates.
+func discordActivity(st station, started time.Time) client.Activity {
+	iconKey := st.id()
+	if iconKey == "nightride" {
+		iconKey = "nrfm"
+	}
+
+	return client.Activity{
+		Type:       2,
+		Details:    "Listening to " + st.name,
+		State:      st.title, // Metadata is formatted as "Artist - Song".
+		LargeImage: iconKey,
+		SmallImage: "nrfm",
+		LargeText:  st.title,
+		Timestamps: &client.Timestamps{Start: &started},
+		Buttons: []*client.Button{
+			{Label: "Listen to " + st.name, Url: "https://nightride.fm/?station=" + st.id()},
+			{Label: "Join the Discord", Url: "https://discord.gg/synthwave"},
+		},
+	}
+}
+
 /* audio */
 
 var (
@@ -675,34 +671,7 @@ func startStreamCmd(idx int, ampChan chan []float64, volume float64, muted bool)
 		speaker.Clear()
 		speaker.Play(volumeCtrl)
 
-		iconKey := strings.ToLower(stationKey(st.url))
-		iconKey = strings.TrimSuffix(iconKey, ".mp3")
-		if iconKey == "nightride" {
-			iconKey = "nrfm"
-		}
-
-		parts := strings.SplitN(st.title, " - ", 2)
-		artist := ""
-		track := st.title
-		if len(parts) == 2 {
-			artist = parts[0]
-			track = parts[1]
-		}
-
-		now := time.Now()
-		_ = client.SetActivity(client.Activity{
-			Type:       2,
-			State:      artist,
-			Details:    "Listening to " + st.name,
-			LargeImage: iconKey,
-			SmallImage: "nrfm",
-			LargeText:  track,
-			Timestamps: &client.Timestamps{Start: &now},
-			Buttons: []*client.Button{
-				{Label: "Listen to " + st.name, Url: "https://nightride.fm/?station=" + st.id()},
-				{Label: "Join the Discord", Url: "https://discord.gg/synthwave"},
-			},
-		})
+		_ = client.SetActivity(discordActivity(st, time.Now()))
 
 		return streamHandleMsg{streamer: decoded, body: body, volumeCtrl: volumeCtrl}
 	}
