@@ -130,6 +130,8 @@ go run . --station darksynth
 - `0`: mute or unmute
 - `H`: show all in-app controls
 
+The current volume, mute state, and last played station are saved between runs. Passing `--station` or `-s` overrides the saved station for that run. Settings are stored under your operating system's user configuration directory in `nightride-cli/settings.json`.
+
 5. ### Build binary:
 
 ```bash

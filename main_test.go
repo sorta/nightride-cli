@@ -2,6 +2,8 @@ package main
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -82,5 +84,63 @@ func TestAdjustVolumeClampsAndUnmutes(t *testing.T) {
 	m.adjustVolume(-2)
 	if m.volume != 0 || m.muted {
 		t.Fatalf("volume decrease produced volume=%v muted=%v, want volume=0 muted=false", m.volume, m.muted)
+	}
+}
+
+func TestAppSettingsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", settingsFilename)
+	want := appSettings{Volume: 0.65, Muted: true, Station: "darksynth"}
+	if err := saveAppSettings(path, want); err != nil {
+		t.Fatalf("saveAppSettings() error: %v", err)
+	}
+
+	got, err := loadAppSettings(path)
+	if err != nil {
+		t.Fatalf("loadAppSettings() error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("loadAppSettings() = %#v, want %#v", got, want)
+	}
+
+	want = appSettings{Volume: 0.25, Station: "datawave"}
+	if err := saveAppSettings(path, want); err != nil {
+		t.Fatalf("saveAppSettings() overwrite error: %v", err)
+	}
+	got, err = loadAppSettings(path)
+	if err != nil {
+		t.Fatalf("loadAppSettings() after overwrite error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("loadAppSettings() after overwrite = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadAppSettingsDefaultsAndValidation(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	got, err := loadAppSettings(missing)
+	if err != nil {
+		t.Fatalf("loadAppSettings() missing file error: %v", err)
+	}
+	if got != defaultAppSettings() {
+		t.Fatalf("loadAppSettings() missing file = %#v, want defaults %#v", got, defaultAppSettings())
+	}
+
+	path := filepath.Join(t.TempDir(), settingsFilename)
+	if err := os.WriteFile(path, []byte(`{"volume":2,"station":"rekt"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = loadAppSettings(path)
+	if err != nil {
+		t.Fatalf("loadAppSettings() validation error: %v", err)
+	}
+	if got.Volume != 1 || got.Station != "rekt" {
+		t.Fatalf("loadAppSettings() validated settings = %#v", got)
+	}
+
+	if err := os.WriteFile(path, []byte(`{"volume":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAppSettings(path); err == nil {
+		t.Fatal("loadAppSettings() accepted malformed JSON")
 	}
 }

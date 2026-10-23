@@ -130,6 +130,8 @@ type model struct {
 	volume             float64
 	muted              bool
 	volumeCtrl         *effects.Volume
+	settingsPath       string
+	lastStation        string
 }
 
 type fadeIn struct {
@@ -204,7 +206,7 @@ func max(a, b int) int {
 	return b
 }
 
-func newModel(playingIndex int) model {
+func newModel(playingIndex int, settings appSettings, settingsPath string) model {
 	items := make([]list.Item, len(stations))
 	for i := range stations {
 		items[i] = stations[i]
@@ -240,7 +242,10 @@ func newModel(playingIndex int) model {
 		showHelp:           false,
 		originalTitles:     originalTitles,
 		scrollStep:         1,
-		volume:             defaultVolume,
+		volume:             clampVolume(settings.Volume),
+		muted:              settings.Muted,
+		settingsPath:       settingsPath,
+		lastStation:        stations[playingIndex].id(),
 	}
 
 	if len(stations) > playingIndex {
@@ -293,15 +298,28 @@ func (m *model) applyVolume() {
 	speaker.Unlock()
 }
 
+func (m *model) persistSettings() {
+	settings := appSettings{
+		Volume:  m.volume,
+		Muted:   m.muted,
+		Station: m.lastStation,
+	}
+	if err := saveAppSettings(m.settingsPath, settings); err != nil {
+		logf("save settings: %v", err)
+	}
+}
+
 func (m *model) adjustVolume(delta float64) {
 	m.volume = clampVolume(m.volume + delta)
 	m.muted = false
 	m.applyVolume()
+	m.persistSettings()
 }
 
 func (m *model) toggleMute() {
 	m.muted = !m.muted
 	m.applyVolume()
+	m.persistSettings()
 }
 
 func (m model) volumeStatus() string {
@@ -348,7 +366,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.stopCurrent()
 			m.playingIdx = idx
+			m.lastStation = stations[idx].id()
 			m.startTime = time.Now()
+			m.persistSettings()
 			return m, startStreamCmd(idx, m.ampChan, m.volume, m.muted)
 		case "up", "down", "k", "j":
 			var cmd tea.Cmd
@@ -1087,10 +1107,10 @@ type rootModel struct {
 	termH int
 }
 
-func newRootModel(playingIndex int) rootModel {
+func newRootModel(playingIndex int, settings appSettings, settingsPath string) rootModel {
 	return rootModel{
 		active:      0,
-		player:      newModel(playingIndex),
+		player:      newModel(playingIndex, settings, settingsPath),
 		irc:         NewZuseModel(),
 		doomRunning: false,
 	}
@@ -1104,7 +1124,9 @@ func (r *rootModel) switchAudioTo(i int) tea.Cmd {
 	}
 	r.player.stopCurrent()
 	r.player.playingIdx = i
+	r.player.lastStation = stations[i].id()
 	r.player.startTime = time.Now()
+	r.player.persistSettings()
 	return startStreamCmd(i, r.player.ampChan, r.player.volume, r.player.muted)
 }
 
@@ -1546,12 +1568,18 @@ func main() {
 
 	const (
 		defaultStation = "Nightride FM"
-		usage          = "The station to listen to"
+		usage          = "Starting station (defaults to the last station used)"
 	)
-	flag.StringVar(&requestedStation, "station", defaultStation, usage)
-	flag.StringVar(&requestedStation, "s", defaultStation, usage+" (shorthand)")
+	flag.StringVar(&requestedStation, "station", "", usage)
+	flag.StringVar(&requestedStation, "s", "", usage+" (shorthand)")
 
 	flag.Parse()
+	stationFlagSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "station" || f.Name == "s" {
+			stationFlagSet = true
+		}
+	})
 
 	if *isRunDoom {
 		if err := RunDoom(nil); err != nil {
@@ -1561,10 +1589,37 @@ func main() {
 		return
 	}
 
-	startingStationIndex, err := findStationIndex(requestedStation)
+	settings := defaultAppSettings()
+	settingsPath, err := appSettingsPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: settings will not be persisted: %v\n", err)
+		settingsPath = ""
+	} else if loaded, loadErr := loadAppSettings(settingsPath); loadErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: ignoring saved settings: %v\n", loadErr)
+	} else {
+		settings = loaded
+	}
+
+	stationQuery := defaultStation
+	if stationFlagSet {
+		stationQuery = requestedStation
+	} else if settings.Station != "" {
+		stationQuery = settings.Station
+	}
+
+	startingStationIndex, err := findStationIndex(stationQuery)
+	if err != nil && !stationFlagSet {
+		fmt.Fprintf(os.Stderr, "Warning: ignoring saved station: %v\n", err)
+		startingStationIndex, err = findStationIndex(defaultStation)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v. Available stations: %s\n", err, stationNames())
 		os.Exit(2)
+	}
+
+	settings.Station = stations[startingStationIndex].id()
+	if err := saveAppSettings(settingsPath, settings); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not save settings: %v\n", err)
 	}
 
 	setTitleNightride()
@@ -1576,7 +1631,7 @@ func main() {
 	restoreStderr := redirectStderrToMonitor()
 	defer restoreStderr()
 
-	app = tea.NewProgram(newRootModel(startingStationIndex), tea.WithAltScreen())
+	app = tea.NewProgram(newRootModel(startingStationIndex, settings, settingsPath), tea.WithAltScreen())
 	if err := app.Start(); err != nil && err != io.EOF {
 		logf("fatal: %v", err)
 		os.Exit(1)
