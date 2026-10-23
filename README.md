@@ -11,6 +11,8 @@ Built for the command line frontier.
 #### Features:
 
 - All radio stations directly accessible from the terminal
+- Select the starting station with `--station` / `-s`
+- In-app volume and mute controls
 - Support for Discord Rich Presence
 
 - Press Y to watch the youtube livestreams in ASCII, colored and monochromatic
@@ -116,7 +118,17 @@ go mod tidy
 
 ```bash
 go run .
+# Start on a specific station:
+go run . --station darksynth
 ```
+
+### Player controls
+
+- `↑`/`↓` or `j`/`k`: navigate stations
+- `Enter`: play or pause
+- `-`/`+`: decrease or increase volume
+- `0`: mute or unmute
+- `H`: show all in-app controls
 
 5. ### Build binary:
 

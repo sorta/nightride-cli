@@ -27,6 +27,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/faiface/beep"
+	"github.com/faiface/beep/effects"
 	"github.com/faiface/beep/mp3"
 	"github.com/faiface/beep/speaker"
 )
@@ -103,8 +104,9 @@ type (
 	}
 	errMsg          error
 	streamHandleMsg struct {
-		streamer beep.StreamSeekCloser
-		body     io.Closer
+		streamer   beep.StreamSeekCloser
+		body       io.Closer
+		volumeCtrl *effects.Volume
 	}
 )
 
@@ -125,6 +127,9 @@ type model struct {
 	originalTitles     map[int]string
 	scrollStep         int
 	showMonitor        bool
+	volume             float64
+	muted              bool
+	volumeCtrl         *effects.Volume
 }
 
 type fadeIn struct {
@@ -186,8 +191,18 @@ func (m *model) updateSelectorColors(iconKey string) {
 	m.l.SetDelegate(delegate)
 }
 
-func min(a, b int) int { if a < b { return a }; return b }
-func max(a, b int) int { if a > b { return a }; return b }
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 func newModel(playingIndex int) model {
 	items := make([]list.Item, len(stations))
@@ -225,6 +240,7 @@ func newModel(playingIndex int) model {
 		showHelp:           false,
 		originalTitles:     originalTitles,
 		scrollStep:         1,
+		volume:             defaultVolume,
 	}
 
 	if len(stations) > playingIndex {
@@ -242,7 +258,7 @@ func newModel(playingIndex int) model {
 
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		startStreamCmd(m.playingIdx, m.ampChan),
+		startStreamCmd(m.playingIdx, m.ampChan, m.volume, m.muted),
 		startSSECmd(),
 		waitMetaCmd(),
 		visualizerTick(),
@@ -250,7 +266,50 @@ func (m model) Init() tea.Cmd {
 	)
 }
 
-const globalGain = 0.55
+const (
+	globalGain    = 0.55
+	defaultVolume = 1.0
+	volumeStep    = 0.05
+)
+
+func clampVolume(volume float64) float64 {
+	return math.Max(0, math.Min(1, volume))
+}
+
+func volumeExponent(volume float64) float64 {
+	if volume <= 0 {
+		return 0
+	}
+	return math.Log2(volume)
+}
+
+func (m *model) applyVolume() {
+	if m.volumeCtrl == nil {
+		return
+	}
+	speaker.Lock()
+	m.volumeCtrl.Volume = volumeExponent(m.volume)
+	m.volumeCtrl.Silent = m.muted || m.volume == 0
+	speaker.Unlock()
+}
+
+func (m *model) adjustVolume(delta float64) {
+	m.volume = clampVolume(m.volume + delta)
+	m.muted = false
+	m.applyVolume()
+}
+
+func (m *model) toggleMute() {
+	m.muted = !m.muted
+	m.applyVolume()
+}
+
+func (m model) volumeStatus() string {
+	if m.muted || m.volume == 0 {
+		return "MUTED"
+	}
+	return fmt.Sprintf("VOL %d%%", int(math.Round(m.volume*100)))
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -268,6 +327,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "z":
 			m.easterEgg = !m.easterEgg
 			return m, nil
+		case "-", "_":
+			m.adjustVolume(-volumeStep)
+			return m, nil
+		case "+", "=":
+			m.adjustVolume(volumeStep)
+			return m, nil
+		case "0":
+			m.toggleMute()
+			return m, nil
 		case "q", "ctrl+c":
 			m.stopCurrent()
 			return m, tea.Quit
@@ -281,7 +349,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stopCurrent()
 			m.playingIdx = idx
 			m.startTime = time.Now()
-			return m, startStreamCmd(idx, m.ampChan)
+			return m, startStreamCmd(idx, m.ampChan, m.volume, m.muted)
 		case "up", "down", "k", "j":
 			var cmd tea.Cmd
 			m.l, cmd = m.l.Update(msg)
@@ -299,7 +367,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	case streamHandleMsg:
-		m.streamer, m.respBody = msg.streamer, msg.body
+		m.streamer, m.respBody, m.volumeCtrl = msg.streamer, msg.body, msg.volumeCtrl
+		m.applyVolume()
 		return m, nil
 	case metaAllMsg:
 		for i, itm := range m.l.Items() {
@@ -452,7 +521,7 @@ func (m model) View() string {
 			Render(EasterEgg)
 	}
 
-	header := "  ▐▐ PAUSED\n"
+	header := "  ▐▐ PAUSED · " + m.volumeStatus() + "\n"
 	currentIconKey := "nrfm"
 
 	if m.playingIdx != -1 {
@@ -480,7 +549,7 @@ func (m model) View() string {
 		}
 
 		header = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD75F")).
-			Render("  " + item.name + "\n  " + "▶ " + displayTitle)
+			Render("  " + item.name + " · " + m.volumeStatus() + "\n  " + "▶ " + displayTitle)
 	}
 
 	var visual string
@@ -489,6 +558,8 @@ func (m model) View() string {
 ┌──────────── HELP ────────────┐
 │ ↑/↓, j/k  Navigate stations  │
 │ Enter     Play/Pause         │
+│ -/+       Adjust volume      │
+│ 0         Mute/unmute        │
 │ L         Toggle layout      │
 │ H         Show/hide help     │
 │ D         Toggle Doom        │
@@ -535,6 +606,7 @@ func (m *model) stopCurrent() {
 		m.respBody.Close()
 		m.respBody = nil
 	}
+	m.volumeCtrl = nil
 }
 
 func dialAndDecode(u string, tries int) (beep.StreamSeekCloser, beep.Format, io.ReadCloser, error) {
@@ -554,7 +626,7 @@ func dialAndDecode(u string, tries int) (beep.StreamSeekCloser, beep.Format, io.
 	return nil, beep.Format{}, nil, fmt.Errorf("failed to decode")
 }
 
-func startStreamCmd(idx int, ampChan chan []float64) tea.Cmd {
+func startStreamCmd(idx int, ampChan chan []float64, volume float64, muted bool) tea.Cmd {
 	return func() tea.Msg {
 		st := stations[idx]
 		decoded, format, body, err := dialAndDecode(st.url, 5)
@@ -573,9 +645,15 @@ func startStreamCmd(idx int, ampChan chan []float64) tea.Cmd {
 			playStream = beep.Resample(4, format.SampleRate, mixerSampleRate, vs)
 		}
 		fade := newFadeIn(playStream, mixerSampleRate, 650*time.Millisecond)
+		volumeCtrl := &effects.Volume{
+			Streamer: fade,
+			Base:     2,
+			Volume:   volumeExponent(volume),
+			Silent:   muted || volume == 0,
+		}
 
 		speaker.Clear()
-		speaker.Play(fade)
+		speaker.Play(volumeCtrl)
 
 		iconKey := strings.ToLower(stationKey(st.url))
 		iconKey = strings.TrimSuffix(iconKey, ".mp3")
@@ -606,7 +684,7 @@ func startStreamCmd(idx int, ampChan chan []float64) tea.Cmd {
 			},
 		})
 
-		return streamHandleMsg{streamer: decoded, body: body}
+		return streamHandleMsg{streamer: decoded, body: body, volumeCtrl: volumeCtrl}
 	}
 }
 
@@ -701,8 +779,12 @@ func sseLoop() {
 	}
 }
 
-func visualizerTick() tea.Cmd { return tea.Tick(33*time.Millisecond, func(time.Time) tea.Msg { return "visualizerTick" }) }
-func scrollTick() tea.Cmd     { return tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg { return "scrollTick" }) }
+func visualizerTick() tea.Cmd {
+	return tea.Tick(33*time.Millisecond, func(time.Time) tea.Msg { return "visualizerTick" })
+}
+func scrollTick() tea.Cmd {
+	return tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg { return "scrollTick" })
+}
 
 type visualizerStreamer struct {
 	beep.Streamer
@@ -1023,7 +1105,7 @@ func (r *rootModel) switchAudioTo(i int) tea.Cmd {
 	r.player.stopCurrent()
 	r.player.playingIdx = i
 	r.player.startTime = time.Now()
-	return startStreamCmd(i, r.player.ampChan)
+	return startStreamCmd(i, r.player.ampChan, r.player.volume, r.player.muted)
 }
 
 func (r rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1064,6 +1146,15 @@ func (r rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if r.yt.active {
 			switch k {
+			case "-", "_":
+				r.player.adjustVolume(-volumeStep)
+				return r, nil
+			case "+", "=":
+				r.player.adjustVolume(volumeStep)
+				return r, nil
+			case "0":
+				r.player.toggleMute()
+				return r, nil
 			case "c", "C":
 				r.yt.colorMode = !r.yt.colorMode
 				r.yt.loading = true
@@ -1098,14 +1189,14 @@ func (r rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return r, nil
 		case "d", "D":
-				// ignore when IRC is active so you can type 'd'
-				if r.active == 1 {
-						break
-				}
-				if !r.doomRunning {
-						return r, r.startDoom()
-				}
-				return r, nil
+			// ignore when IRC is active so you can type 'd'
+			if r.active == 1 {
+				break
+			}
+			if !r.doomRunning {
+				return r, r.startDoom()
+			}
+			return r, nil
 		case "y", "Y":
 			if r.active == 1 {
 				break
@@ -1168,7 +1259,6 @@ func (r rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return r, iCmd
 }
 
-
 func (r rootModel) View() string {
 	if r.yt.active {
 		stationName := ""
@@ -1177,7 +1267,7 @@ func (r rootModel) View() string {
 			stationName = stations[r.yt.idx].name
 			meta = stations[r.yt.idx].title
 		}
-		head := "  YouTube ASCII · " + stationName
+		head := "  YouTube ASCII · " + stationName + " · " + r.player.volumeStatus()
 		if meta != "" {
 			head += " · " + meta
 		}
@@ -1409,30 +1499,39 @@ func extractJSONBlock(html, name string) string {
 	return ""
 }
 
-func findStationIndex(query *string) int {
-	pattern := fmt.Sprintf(`(?i)%s`, *query)
-	re := regexp.MustCompile(pattern)
+func findStationIndex(query string) (int, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return -1, fmt.Errorf("station cannot be empty")
+	}
 
-	for i := range stations {
-		match := re.MatchString(stations[i].name)
-		if match {
-			return i
+	for i, station := range stations {
+		if query == strings.ToLower(station.name) || query == station.id() {
+			return i, nil
 		}
 	}
 
-	return -1
+	matches := make([]int, 0, 1)
+	for i, station := range stations {
+		if strings.HasPrefix(strings.ToLower(station.name), query) || strings.HasPrefix(station.id(), query) {
+			matches = append(matches, i)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return -1, fmt.Errorf("station %q is ambiguous", query)
+	}
+	return -1, fmt.Errorf("station %q not found", query)
 }
 
-func getStartingStationIndex(query string) int {
-	if query != "" {
-		stationIndex := findStationIndex(&query)
-		if stationIndex >= 0 {
-			return stationIndex
-		} else {
-			fmt.Fprintln(os.Stderr, "Station not found, using default")
-		}
+func stationNames() string {
+	names := make([]string, len(stations))
+	for i, station := range stations {
+		names[i] = station.name
 	}
-	return 0
+	return strings.Join(names, ", ")
 }
 
 /* ───────────── main ───────────── */
@@ -1462,7 +1561,11 @@ func main() {
 		return
 	}
 
-	startingStationIndex := getStartingStationIndex(requestedStation)
+	startingStationIndex, err := findStationIndex(requestedStation)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v. Available stations: %s\n", err, stationNames())
+		os.Exit(2)
+	}
 
 	setTitleNightride()
 
@@ -1487,17 +1590,17 @@ var _ = color.RGBA{}
 
 func startFFMPEG(hls string, cols, asciiRows int) (*exec.Cmd, io.ReadCloser, error) {
 	args := []string{
-			"-hide_banner", "-loglevel", "error",
-			"-fflags", "nobuffer",
-			"-re",
-			"-probesize", "32k",
-			"-rw_timeout", "1500000",
-			"-thread_queue_size", "512",
-			"-i", hls,
-			"-an",
-			"-vf", fmt.Sprintf("scale=%d:%d:flags=fast_bilinear,fps=20", cols, asciiRows),
-			"-pix_fmt", "rgb24",
-			"-f", "rawvideo", "pipe:1",
+		"-hide_banner", "-loglevel", "error",
+		"-fflags", "nobuffer",
+		"-re",
+		"-probesize", "32k",
+		"-rw_timeout", "1500000",
+		"-thread_queue_size", "512",
+		"-i", hls,
+		"-an",
+		"-vf", fmt.Sprintf("scale=%d:%d:flags=fast_bilinear,fps=20", cols, asciiRows),
+		"-pix_fmt", "rgb24",
+		"-f", "rawvideo", "pipe:1",
 	}
 
 	cmd := exec.Command("ffmpeg", args...)
